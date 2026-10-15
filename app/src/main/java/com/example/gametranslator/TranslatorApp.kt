@@ -207,14 +207,16 @@ class TranslatorService : AccessibilityService() {
 
     private fun onText(t: Text, ox: Int, oy: Int) {
         val br = Rect(bp.x, bp.y, bp.x + bp.width, bp.y + bp.height)
+        
+        // Recogemos todos los bloques de texto válidos sin omitir ninguno y los ordenamos por posición vertical/horizontal
         val bl = t.textBlocks.mapNotNull { b ->
             val box = b.boundingBox ?: return@mapNotNull null
-            // Limpiamos los saltos de línea y espacios raros para que el texto sea puro
             val s = b.text.replace("\n", " ").trim()
             if (!jp.containsMatchIn(s)) return@mapNotNull null
             val r = Rect(box).apply { offset(ox, oy) }
             if (Rect.intersects(r, br)) null else r to s
-        }
+        }.sortedWith(compareBy({ it.first.top }, { it.first.left }))
+
         if (bl.isEmpty()) { ov.removeAllViews(); last = ""; done(); return }
         
         val key = bl.joinToString("|") { it.second }
@@ -223,15 +225,11 @@ class TranslatorService : AccessibilityService() {
         val out = arrayOfNulls<String>(bl.size)
         var n = 0
         bl.forEachIndexed { i, x ->
-            // Filtramos texto limpio: eliminamos símbolos sueltos o basuras que confunden al traductor
-            val cleanText = x.second.replace(Regex("[！？\\.\\s]+$"), "").trim()
-            val textToTranslate = if (cleanText.isEmpty()) x.second else cleanText
-
-            tr.translate(textToTranslate).addOnCompleteListener { task ->
+            tr.translate(x.second).addOnCompleteListener { task ->
                 if (task.isSuccessful) {
                     out[i] = task.result
                 } else {
-                    out[i] = x.second // Si falla, dejamos el texto original para no romper nada
+                    out[i] = x.second
                 }
                 n++
                 if (n == bl.size) {
@@ -257,6 +255,7 @@ class TranslatorService : AccessibilityService() {
                 val targetSize = max(12f, r.height() * 0.65f)
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, targetSize)
             }
+            // Ancho automático (WRAP_CONTENT) para evitar barras gigantes y prevenir superposiciones entre cajas
             val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, r.height())
             lp.leftMargin = r.left
             lp.topMargin = r.top
@@ -297,7 +296,6 @@ class TranslatorService : AccessibilityService() {
     private fun saveZone(r: Rect) {
         sel?.let { v -> runCatching { wm.removeView(v) } }; sel = null
         if (r.width() < dp(40) || r.height() < dp(30)) {
-            prefs.execRemoveZone() // Mantener compatibilidad de borrado
             prefs.edit().remove("zone").apply(); toast("Zona borrada: pantalla completa")
         } else {
             prefs.edit().putString("zone", "${r.left},${r.top},${r.right},${r.bottom}").apply(); toast("Zona guardada")
