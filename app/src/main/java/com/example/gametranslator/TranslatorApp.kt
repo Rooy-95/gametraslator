@@ -1,5 +1,8 @@
 package com.example.gametranslator
 
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.app.Activity
 import android.content.*
 import android.graphics.*
@@ -50,8 +53,15 @@ class MainActivity : Activity() {
             label.text = "Apretá el botón del mando…"
         }
         btn("Pantalla completa (borrar zona)") { prefs.edit().remove("zone").apply() }
+        val vel = Button(this)
+        fun showVel() { vel.text = "Velocidad de revisión: " + (prefs.getLong("interval", 2000L) / 1000) + " s (tocá para cambiar)" }
+        vel.setOnClickListener {
+            val next = when (prefs.getLong("interval", 2000L)) { 2000L -> 3000L; 3000L -> 4000L; else -> 2000L }
+            prefs.edit().putLong("interval", next).apply(); showVel()
+        }
+        showVel(); add(vel)
         val mode = Button(this)
-        fun showMode() { mode.text = if (prefs.getBoolean("fixed", false)) "Modo: FIJO" else "Modo: EN VIVO" }
+        fun showMode() { mode.text = if (prefs.getBoolean("fixed", false)) "Modo: FIJO (un toque traduce y deja la traducción fija)" else "Modo: EN VIVO" }
         mode.setOnClickListener { prefs.edit().putBoolean("fixed", !prefs.getBoolean("fixed", false)).apply(); showMode() }
         showMode(); add(mode)
         val keyBox = EditText(this).apply {
@@ -61,8 +71,7 @@ class MainActivity : Activity() {
         }
         add(keyBox)
         btn("Guardar clave") {
-            val cleanKey = keyBox.text.toString().trim()
-            prefs.edit().putString("gkey", cleanKey).apply()
+            prefs.edit().putString("gkey", keyBox.text.toString().trim()).apply()
             Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
         }
         setContentView(ScrollView(this).apply { addView(col) })
@@ -95,7 +104,7 @@ class TranslatorService : AccessibilityService() {
     private lateinit var ov: FrameLayout
     private var sel: View? = null
     private var live = false; private var show = false; private var busy = false; private var ready = false
-    private var frozen = false
+    private var frozen = false; private var warned = false
     private var usingGemini = false
     private var keyPending: Runnable? = null
     private var last = ""
@@ -178,17 +187,17 @@ class TranslatorService : AccessibilityService() {
         btn.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(when {
-                !live && !show -> Color.argb(200, 40, 40, 40)
                 frozen -> Color.argb(220, 90, 90, 90)
-                usingGemini -> Color.argb(220, 30, 160, 60)
-                else -> Color.argb(220, 30, 100, 200)
+                usingGemini -> Color.argb(220, 30, 160, 60) // Verde si usa Gemini online
+                live || show -> Color.argb(220, 30, 100, 200) // Azul si usa offline
+                else -> Color.argb(200, 40, 40, 40)
             })
         }
     }
 
     private fun toggleLive() {
         if (prefs.getBoolean("fixed", false)) { fixedTap(); return }
-        live = !live; frozen = false
+        live = !live; frozen = false; warned = false
         if (live) {
             show = true; last = ""; ov.removeAllViews(); ov.visibility = View.VISIBLE
             h.post(tick)
@@ -200,7 +209,7 @@ class TranslatorService : AccessibilityService() {
     }
 
     private fun fixedTap() {
-        live = false; frozen = false; h.removeCallbacks(tick)
+        live = false; frozen = false; warned = false; h.removeCallbacks(tick)
         show = !show
         if (show) { last = ""; ov.removeAllViews(); ov.visibility = View.VISIBLE; scan() }
         else { ov.removeAllViews(); ov.visibility = View.GONE; usingGemini = false }
@@ -212,7 +221,7 @@ class TranslatorService : AccessibilityService() {
             frozen = !frozen; paint()
         } else {
             show = !show
-            if (show) { last = ""; ov.removeAllViews(); ov.visibility = View.VISIBLE; scan() } else { ov.removeAllViews(); ov.visibility = View.GONE; usingGemini = false }
+            if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else { ov.visibility = View.GONE; usingGemini = false }
             paint()
         }
     }
@@ -299,17 +308,12 @@ class TranslatorService : AccessibilityService() {
             return 
         }
         Thread {
-            var res: List<String?>? = null
-            try {
-                res = gemini(key, texts)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            val res: List<String?>? = try { gemini(key, texts) } catch (e: Exception) { null }
             h.post {
                 if (res != null) {
                     usingGemini = true
                     paint()
-                    cb(res) 
+                    cb(res)
                 } else {
                     usingGemini = false
                     paint()
@@ -331,17 +335,19 @@ class TranslatorService : AccessibilityService() {
 
     private fun gemini(key: String, texts: List<String>): List<String?> {
         val lines = texts.mapIndexed { i, s -> "${i + 1}.$s" }.joinToString("\n")
-        val prompt = "Sos traductor experto de videojuegos de Japón a español neutro. Traducí cada línea numerada manteniendo rigurosamente el sentido original, el tono de los personajes y respetando la puntuación (como ? y !). No inventes nombres propios ni agregues explicaciones. Devolvé SOLO un arreglo JSON plano con ${texts.size} strings, respetando estrictamente el mismo orden numérico.\n\n$lines"
+        val prompt = "Sos traductor de videojuegos del japonés al español neutro. Traducí cada línea numerada de forma natural, " +
+            "respetando el tono del personaje y sin explicar nada. Los nombres propios dejalos como están. " +
+            "Devolvé SOLO un arreglo JSON de ${texts.size} strings, en el mismo orden.\n\n$lines"
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.1))
+            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2))
         
         val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
             .openConnection() as HttpURLConnection
             
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
-        con.setRequestProperty("Authorization", "Bearer $key")
+        con.setRequestProperty("Authorization", "Bearer $key") // Autenticación Bearer para clave AQ...
         
         con.outputStream.use { it.write(body.toString().toByteArray()) }
         if (con.responseCode != 200) throw Exception("HTTP " + con.responseCode)
@@ -376,7 +382,7 @@ class TranslatorService : AccessibilityService() {
 
     private fun pickZone() {
         if (sel != null) return
-        toast("Dibujá un rectángulo sobre el texto.")
+        toast("Dibujá un rectángulo sobre el texto. Un toque suelto = pantalla completa")
         val v = object : View(this@TranslatorService) {
             var x0 = 0f; var y0 = 0f; var x1 = 0f; var y1 = 0f; var on = false
             val line = Paint().apply { color = Color.CYAN; style = Paint.Style.STROKE; strokeWidth = 4f }
@@ -405,7 +411,7 @@ class TranslatorService : AccessibilityService() {
     private fun saveZone(r: Rect) {
         sel?.let { v -> runCatching { wm.removeView(v) } }; sel = null
         if (r.width() < dp(40) || r.height() < dp(30)) {
-            prefs.edit().remove("zone").apply(); toast("Zona borrada")
+            prefs.edit().remove("zone").apply(); toast("Zona borrada: pantalla completa")
         } else {
             prefs.edit().putString("zone", "${r.left},${r.top},${r.right},${r.bottom}").apply(); toast("Zona guardada")
         }
