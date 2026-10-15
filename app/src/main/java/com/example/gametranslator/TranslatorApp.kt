@@ -19,15 +19,10 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.*
-import org.json.JSONArray
-import org.json.JSONObject
 
 private const val PREFS = "gt"
 private const val DEFAULT_KEY = KeyEvent.KEYCODE_BUTTON_R2
-private const val GEMINI_MODEL = "gemini-1.5-flash"
 
 class MainActivity : Activity() {
     private var waiting = false
@@ -43,7 +38,7 @@ class MainActivity : Activity() {
         label = TextView(this)
         add(TextView(this).apply {
             text = "1) Activá 'Traductor de juegos' en Accesibilidad.\n" +
-                "2) Abrí el juego. Botón 訳: Verde = Gemini Online, Azul = Offline.\n"
+                "2) Modo Offline (ML Kit) 100% libre de internet y servidores.\n"
         })
         add(label)
         btn("Abrir Accesibilidad") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -64,16 +59,6 @@ class MainActivity : Activity() {
         fun showMode() { mode.text = if (prefs.getBoolean("fixed", false)) "Modo: FIJO (un toque traduce y deja la traducción fija)" else "Modo: EN VIVO" }
         mode.setOnClickListener { prefs.edit().putBoolean("fixed", !prefs.getBoolean("fixed", false)).apply(); showMode() }
         showMode(); add(mode)
-        val keyBox = EditText(this).apply {
-            hint = "Clave de Gemini (AQ...)"
-            setSingleLine()
-            setText(prefs.getString("gkey", ""))
-        }
-        add(keyBox)
-        btn("Guardar clave") {
-            prefs.edit().putString("gkey", keyBox.text.toString().trim()).apply()
-            Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
-        }
         setContentView(ScrollView(this).apply { addView(col) })
         refresh()
     }
@@ -105,7 +90,6 @@ class TranslatorService : AccessibilityService() {
     private var sel: View? = null
     private var live = false; private var show = false; private var busy = false; private var ready = false
     private var frozen = false; private var warned = false
-    private var usingGemini = false
     private var keyPending: Runnable? = null
     private var last = ""
     private val cache = HashMap<String, String>()
@@ -153,9 +137,11 @@ class TranslatorService : AccessibilityService() {
             true
         }
         wm.addView(btn, bp)
+        
+        // Descarga y preparación del modelo offline de ML Kit
         tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            .addOnSuccessListener { ready = true }
-            .addOnFailureListener {}
+            .addOnSuccessListener { ready = true; toast("Traductor offline listo") }
+            .addOnFailureListener { toast("Error al descargar modelo offline") }
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
@@ -188,8 +174,7 @@ class TranslatorService : AccessibilityService() {
             shape = GradientDrawable.OVAL
             setColor(when {
                 frozen -> Color.argb(220, 90, 90, 90)
-                usingGemini -> Color.argb(220, 30, 160, 60) // Verde si usa Gemini online
-                live || show -> Color.argb(220, 30, 100, 200) // Azul si usa offline
+                live || show -> Color.argb(220, 30, 100, 200) // Azul fijo indicando modo offline activo
                 else -> Color.argb(200, 40, 40, 40)
             })
         }
@@ -203,7 +188,6 @@ class TranslatorService : AccessibilityService() {
             h.post(tick)
         } else {
             h.removeCallbacks(tick); show = false; ov.removeAllViews(); ov.visibility = View.GONE
-            usingGemini = false
         }
         paint()
     }
@@ -212,7 +196,7 @@ class TranslatorService : AccessibilityService() {
         live = false; frozen = false; warned = false; h.removeCallbacks(tick)
         show = !show
         if (show) { last = ""; ov.removeAllViews(); ov.visibility = View.VISIBLE; scan() }
-        else { ov.removeAllViews(); ov.visibility = View.GONE; usingGemini = false }
+        else { ov.removeAllViews(); ov.visibility = View.GONE }
         paint()
     }
 
@@ -221,7 +205,7 @@ class TranslatorService : AccessibilityService() {
             frozen = !frozen; paint()
         } else {
             show = !show
-            if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else { ov.visibility = View.GONE; usingGemini = false }
+            if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else { ov.visibility = View.GONE }
             paint()
         }
     }
@@ -238,7 +222,7 @@ class TranslatorService : AccessibilityService() {
 
     private fun scan() {
         if (busy) return
-        if (!ready && prefs.getString("gkey", "").isNullOrBlank()) return
+        if (!ready) return
         busy = true
         ov.visibility = View.INVISIBLE
         h.postDelayed({ capture() }, 100)
@@ -277,7 +261,7 @@ class TranslatorService : AccessibilityService() {
         val br = Rect(bp.x, bp.y, bp.x + bp.width, bp.y + bp.height)
         val bl = t.textBlocks.mapNotNull { b ->
             val box = b.boundingBox ?: return@mapNotNull null
-            val s = b.text.replace("\n", "")
+            val s = b.text.replace("\n", " ").trim()
             if (!jp.containsMatchIn(s)) return@mapNotNull null
             val r = Rect(box).apply { offset(ox, oy) }
             if (Rect.intersects(r, br)) null else Triple(r, s, max(1, b.lines.size))
@@ -293,69 +277,32 @@ class TranslatorService : AccessibilityService() {
             done()
         }
         if (need.isEmpty()) { finish(); return }
-        translateAll(need) { res ->
+        
+        // Traducción directa offline mediante ML Kit
+        translateOfflineBatch(need) { res ->
             need.forEachIndexed { i, s -> res.getOrNull(i)?.let { cache[s] = it } }
             finish()
         }
     }
 
-    private fun translateAll(texts: List<String>, cb: (List<String?>) -> Unit) {
-        val key = prefs.getString("gkey", "")?.trim().orEmpty()
-        if (key.isEmpty()) { 
-            usingGemini = false
-            h.post { paint() }
-            offline(texts, cb)
-            return 
-        }
-        Thread {
-            val res: List<String?>? = try { gemini(key, texts) } catch (e: Exception) { null }
-            h.post {
-                if (res != null) {
-                    usingGemini = true
-                    paint()
-                    cb(res)
-                } else {
-                    usingGemini = false
-                    paint()
-                    offline(texts, cb)
-                }
-            }
-        }.start()
-    }
-
-    private fun offline(texts: List<String>, cb: (List<String?>) -> Unit) {
-        val out = arrayOfNulls<String>(texts.size); var n = 0
+    private fun translateOfflineBatch(texts: List<String>, cb: (List<String?>) -> Unit) {
+        val out = arrayOfNulls<String>(texts.size)
+        var completed = 0
         texts.forEachIndexed { i, s ->
             tr.translate(s).addOnCompleteListener { task ->
-                if (task.isSuccessful) out[i] = task.result
-                if (++n == texts.size) cb(out.toList())
+                if (task.isSuccessful) {
+                    out[i] = task.result
+                } else {
+                    out[i] = s // Si falla, devuelve el texto original
+                }
+                synchronized(out) {
+                    completed++
+                    if (completed == texts.size) {
+                        h.post { cb(out.toList()) }
+                    }
+                }
             }
         }
-    }
-
-    private fun gemini(key: String, texts: List<String>): List<String?> {
-        val lines = texts.mapIndexed { i, s -> "${i + 1}.$s" }.joinToString("\n")
-        val prompt = "Sos traductor de videojuegos del japonés al español neutro. Traducí cada línea numerada de forma natural, " +
-            "respetando el tono del personaje y sin explicar nada. Los nombres propios dejalos como están. " +
-            "Devolvé SOLO un arreglo JSON de ${texts.size} strings, en el mismo orden.\n\n$lines"
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2))
-        
-        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
-            .openConnection() as HttpURLConnection
-            
-        con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
-        con.setRequestProperty("Content-Type", "application/json")
-        con.setRequestProperty("Authorization", "Bearer $key")
-        
-        con.outputStream.use { it.write(body.toString().toByteArray()) }
-        if (con.responseCode != 200) throw Exception("HTTP " + con.responseCode)
-        val resp = con.inputStream.bufferedReader().readText()
-        val txt = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
-            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-        val arr = JSONArray(txt.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim())
-        return List(texts.size) { if (it < arr.length()) arr.optString(it).takeIf { s -> s.isNotBlank() } else null }
     }
 
     private fun render(rs: List<Pair<Rect, Int>>, tx: List<String?>) {
