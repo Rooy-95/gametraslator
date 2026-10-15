@@ -1,18 +1,35 @@
 package com.example.gametranslator
 
+import android.accessibilityservice.AccessibilityService
 import android.app.Activity
-import android.content.*
-import android.graphics.*
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
-import android.os.*
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
-import android.view.*
+import android.view.Display
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
-import android.widget.*
+import android.widget.Button
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.*
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import java.net.HttpURLConnection
@@ -33,11 +50,11 @@ class MainActivity : Activity() {
         fun add(v: View) = col.addView(v)
         fun btn(s: String, f: () -> Unit) = add(Button(this).apply { text = s; setOnClickListener { f() } })
         
-        add(TextView(this).apply { text = "1) Activá el traductor en Accesibilidad.\n2) Tocá el botón '訳' en el juego para traducir y congelar el texto." })
+        add(TextView(this).apply { text = "1) Activá el traductor en Accesibilidad.\n2) Guardá tu clave abajo." })
         btn("Abrir Accesibilidad") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         
         val keyBox = EditText(this).apply {
-            hint = "Clave de Gemini (ej. AQ...)"
+            hint = "Clave de Gemini (AQ...)"
             setSingleLine()
             setText(prefs.getString("gkey", ""))
         }
@@ -71,25 +88,17 @@ class TranslatorService : AccessibilityService() {
         wm.addView(ov, WindowManager.LayoutParams(m, m, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE, PixelFormat.TRANSLUCENT))
         
         btn = TextView(this).apply { text = "訳"; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.WHITE) }
-        updateButtonColor(false)
+        btn.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(200, 40, 40, 40)) }
         
         val bp = WindowManager.LayoutParams(dp(52), dp(52), WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply { x = dp(16); y = dp(120) }
         
         btn.setOnClickListener {
             show = !show
-            updateButtonColor(show)
             ov.visibility = if (show) View.VISIBLE else View.GONE
             if (show) scan() else ov.removeAllViews()
         }
         wm.addView(btn, bp)
         tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
-    }
-
-    private fun updateButtonColor(active: Boolean) {
-        btn.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(if (active) Color.argb(220, 30, 160, 60) else Color.argb(200, 40, 40, 40))
-        }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -126,7 +135,7 @@ class TranslatorService : AccessibilityService() {
         } else {
             Thread {
                 try {
-                    val prompt = "Sos traductor experto de videojuegos de Japón a español neutro. Traducí manteniendo el tono y sentido original. Devolvé ÚNICAMENTE el texto traducido sin explicaciones ni comillas extra: $text"
+                    val prompt = "Sos traductor experto de videojuegos de Japón a español neutro. Traducí manteniendo el tono y sentido original. Devolvé ÚNICAMENTE el texto traducido sin explicaciones: $text"
                     val body = JSONObject().put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
                     val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent").openConnection() as HttpURLConnection
                     con.requestMethod = "POST"; con.doOutput = true
