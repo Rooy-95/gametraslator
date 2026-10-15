@@ -209,7 +209,8 @@ class TranslatorService : AccessibilityService() {
         val br = Rect(bp.x, bp.y, bp.x + bp.width, bp.y + bp.height)
         val bl = t.textBlocks.mapNotNull { b ->
             val box = b.boundingBox ?: return@mapNotNull null
-            val s = b.text.replace("\n", " ")
+            // Limpiamos los saltos de línea y espacios raros para que el texto sea puro
+            val s = b.text.replace("\n", " ").trim()
             if (!jp.containsMatchIn(s)) return@mapNotNull null
             val r = Rect(box).apply { offset(ox, oy) }
             if (Rect.intersects(r, br)) null else r to s
@@ -219,13 +220,18 @@ class TranslatorService : AccessibilityService() {
         val key = bl.joinToString("|") { it.second }
         if (key == last) { done(); return }
         
-        // Traducimos cada línea por separado de forma limpia para que la gramática y el sentido sean correctos
         val out = arrayOfNulls<String>(bl.size)
         var n = 0
         bl.forEachIndexed { i, x ->
-            tr.translate(x.second).addOnCompleteListener { task ->
+            // Filtramos texto limpio: eliminamos símbolos sueltos o basuras que confunden al traductor
+            val cleanText = x.second.replace(Regex("[！？\\.\\s]+$"), "").trim()
+            val textToTranslate = if (cleanText.isEmpty()) x.second else cleanText
+
+            tr.translate(textToTranslate).addOnCompleteListener { task ->
                 if (task.isSuccessful) {
                     out[i] = task.result
+                } else {
+                    out[i] = x.second // Si falla, dejamos el texto original para no romper nada
                 }
                 n++
                 if (n == bl.size) {
@@ -248,11 +254,10 @@ class TranslatorService : AccessibilityService() {
                 setBackgroundColor(Color.argb(230, 20, 20, 20))
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(pad, pad, pad, pad)
-                // Tamaño dinámico proporcional a la altura de cada renglón original
                 val targetSize = max(12f, r.height() * 0.65f)
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, targetSize)
             }
-            val lp = FrameLayout.LayoutParams(r.width(), r.height())
+            val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, r.height())
             lp.leftMargin = r.left
             lp.topMargin = r.top
             ov.addView(v, lp)
@@ -292,6 +297,7 @@ class TranslatorService : AccessibilityService() {
     private fun saveZone(r: Rect) {
         sel?.let { v -> runCatching { wm.removeView(v) } }; sel = null
         if (r.width() < dp(40) || r.height() < dp(30)) {
+            prefs.execRemoveZone() // Mantener compatibilidad de borrado
             prefs.edit().remove("zone").apply(); toast("Zona borrada: pantalla completa")
         } else {
             prefs.edit().putString("zone", "${r.left},${r.top},${r.right},${r.bottom}").apply(); toast("Zona guardada")
