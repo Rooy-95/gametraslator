@@ -19,10 +19,82 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.*
+import org.json.JSONArray
+import org.json.JSONObject
 
 private const val PREFS = "gt"
 private const val DEFAULT_KEY = KeyEvent.KEYCODE_BUTTON_R2
+private const val DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+private val MODELS = listOf("gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest", "gemini-3.5-flash")
+
+private class GemErr(val code: Int, msg: String) : Exception(msg)
+
+// Un pedido a un modelo de Gemini. Devuelve el texto JSON de la respuesta.
+private fun geminiText(key: String, model: String, prompt: String): String {
+    val body = JSONObject()
+        .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+        .put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+    val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+        .openConnection() as HttpURLConnection
+    con.requestMethod = "POST"; con.connectTimeout = 6000; con.readTimeout = 20000; con.doOutput = true
+    con.setRequestProperty("Content-Type", "application/json")
+    con.setRequestProperty("x-goog-api-key", key)
+    con.outputStream.use { it.write(body.toString().toByteArray()) }
+    val code = con.responseCode
+    if (code != 200) {
+        val err = try { con.errorStream?.bufferedReader()?.readText().orEmpty() } catch (e: Exception) { "" }
+        throw GemErr(code, "HTTP $code ($model) " + err.replace("\n", " ").take(150))
+    }
+    val resp = con.inputStream.bufferedReader().readText()
+    val parts = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
+        .getJSONObject("content").getJSONArray("parts")
+    val sb = StringBuilder()
+    for (i in 0 until parts.length()) {
+        val p = parts.getJSONObject(i)
+        if (!p.optBoolean("thought", false)) sb.append(p.optString("text", ""))
+    }
+    return sb.toString().trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+}
+
+// Prueba el modelo elegido y, si no existe o no hay cupo, los siguientes. Devuelve (modelo que funcionó, texto).
+private fun geminiTry(key: String, pref: String, prompt: String): Pair<String, String> {
+    var last: Exception? = null
+    for (m in (listOf(pref) + MODELS).distinct()) {
+        try {
+            return Pair(m, geminiText(key, m, prompt))
+        } catch (e: GemErr) {
+            last = e
+            if (e.code == 400 || e.code == 401 || e.code == 403) throw e   // clave mal: no sirve probar otros modelos
+        }
+    }
+    throw last ?: Exception("sin respuesta")
+}
+
+// Gemini agrupa las líneas que forman una misma frase u opción y las traduce.
+private fun geminiGroups(key: String, pref: String, lines: List<String>): Pair<String, List<Pair<List<Int>, String>>> {
+    val numbered = lines.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("\n")
+    val prompt = "Sos traductor de videojuegos del japonés al español neutro. Abajo están las líneas de texto que un OCR leyó en la pantalla " +
+        "de una novela visual, numeradas. Una línea puede ser parte de una frase que sigue en la línea siguiente (aunque termine en puntos suspensivos), " +
+        "o ser una frase u opción de respuesta independiente. Agrupá las líneas que forman una misma frase u opción y traducí cada grupo al español " +
+        "de forma natural. El OCR puede equivocarse (por ejemplo, confundir 了 con 3): deducí el texto más probable. Respetá el tono, el género y la " +
+        "persona (俺 y 僕 son un hablante masculino; 彼氏 o カレシ es novio, 彼女 o カノジョ es novia). Los nombres propios dejalos como están. " +
+        "Devolvé SOLO un arreglo JSON de objetos con este formato: [{\"l\":[1,2],\"t\":\"traducción\"}], donde l son los números de línea del grupo, " +
+        "en orden, y cada línea aparece en un solo grupo.\n\n$numbered"
+    val (model, txt) = geminiTry(key, pref, prompt)
+    val arr = JSONArray(txt)
+    val groups = ArrayList<Pair<List<Int>, String>>()
+    for (i in 0 until arr.length()) {
+        val o = arr.optJSONObject(i) ?: continue
+        val la = o.optJSONArray("l") ?: continue
+        val idx = (0 until la.length()).map { la.optInt(it) }.filter { it in 1..lines.size }
+        val t = o.optString("t")
+        if (idx.isNotEmpty() && t.isNotBlank()) groups.add(Pair(idx, t))
+    }
+    return Pair(model, groups)
+}
 
 class MainActivity : Activity() {
     private var waiting = false
@@ -37,8 +109,10 @@ class MainActivity : Activity() {
         fun btn(s: String, f: () -> Unit) = add(Button(this).apply { text = s; setOnClickListener { f() } })
         label = TextView(this)
         add(TextView(this).apply {
-            text = "1) Activá 'Traductor de juegos' en Accesibilidad.\n" +
-                "2) Modo Offline (ML Kit) 100% libre de internet y servidores.\n"
+            text = "1) Activá 'Traductor de juegos' en Accesibilidad (Android 13+: Info de la app > ⋮ > Permitir ajustes restringidos).\n" +
+                "2) Abrí el juego. Botón 訳: toque = traducción en vivo (verde), doble toque = congelar/seguir (azul), mantener = elegir zona, arrastrar = mover. Con la traducción en vivo apagada, el doble toque traduce una sola vez.\n" +
+                "Mando: una vez = prender/apagar, dos veces = congelar/seguir.\n" +
+                "Modo FIJO (botón de abajo): un toque traduce una sola vez y deja la traducción fija, sin parpadeo. Otro toque la quita. Ideal para novelas visuales.\n"
         })
         add(label)
         btn("Abrir Accesibilidad") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -56,9 +130,45 @@ class MainActivity : Activity() {
         }
         showVel(); add(vel)
         val mode = Button(this)
-        fun showMode() { mode.text = if (prefs.getBoolean("fixed", false)) "Modo: FIJO (un toque traduce y deja la traducción fija)" else "Modo: EN VIVO" }
+        fun showMode() { mode.text = if (prefs.getBoolean("fixed", false)) "Modo: FIJO (un toque traduce y deja la traducción fija)" else "Modo: EN VIVO (revisa solo cada tanto)" }
         mode.setOnClickListener { prefs.edit().putBoolean("fixed", !prefs.getBoolean("fixed", false)).apply(); showMode() }
         showMode(); add(mode)
+
+        val keyBox = EditText(this).apply {
+            hint = "Clave de Gemini (opcional)"
+            setSingleLine()
+            setText(prefs.getString("gkey", ""))
+        }
+        val modelBox = EditText(this).apply {
+            hint = "Modelo de Gemini"
+            setSingleLine()
+            setText(prefs.getString("gmodel", DEFAULT_MODEL))
+        }
+        val status = TextView(this)
+        add(keyBox); add(modelBox)
+        btn("Guardar clave y modelo") {
+            prefs.edit().putString("gkey", keyBox.text.toString().trim())
+                .putString("gmodel", modelBox.text.toString().trim().ifEmpty { DEFAULT_MODEL }).apply()
+            status.text = "Guardado"
+        }
+        btn("Probar Gemini") {
+            val k = keyBox.text.toString().trim()
+            val mdl = modelBox.text.toString().trim().ifEmpty { DEFAULT_MODEL }
+            status.text = "Probando…"
+            Thread {
+                var ok: String? = null
+                val msg = try {
+                    val (m, g) = geminiGroups(k, mdl, listOf("了解！", "俺はキミのカレシじゃないから"))
+                    ok = m
+                    "Gemini OK ($m): " + g.joinToString(" | ") { it.second }
+                } catch (e: Exception) { "Falló: " + e.message }
+                runOnUiThread {
+                    status.text = msg
+                    ok?.let { m -> modelBox.setText(m); prefs.edit().putString("gkey", k).putString("gmodel", m).apply() }
+                }
+            }.start()
+        }
+        add(status)
         setContentView(ScrollView(this).apply { addView(col) })
         refresh()
     }
@@ -92,7 +202,7 @@ class TranslatorService : AccessibilityService() {
     private var frozen = false; private var warned = false
     private var keyPending: Runnable? = null
     private var last = ""
-    private val cache = HashMap<String, String>()
+    private val pageCache = HashMap<String, List<Pair<List<Int>, String>>>()
     private val jp = Regex("[\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF]")
     private val ocr by lazy { TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()) }
     private val tr by lazy {
@@ -137,11 +247,10 @@ class TranslatorService : AccessibilityService() {
             true
         }
         wm.addView(btn, bp)
-        
-        // Descarga y preparación del modelo offline de ML Kit
+        toast("Bajando modelo (solo la primera vez, con internet)")
         tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            .addOnSuccessListener { ready = true; toast("Traductor offline listo") }
-            .addOnFailureListener { toast("Error al descargar modelo offline") }
+            .addOnSuccessListener { ready = true; toast("Traductor listo") }
+            .addOnFailureListener { toast("No se pudo bajar el modelo. Revisá internet.") }
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
@@ -154,6 +263,7 @@ class TranslatorService : AccessibilityService() {
         return super.onUnbind(i)
     }
 
+    // Mando: una vez = prender/apagar, dos veces rápido = congelar/seguir
     override fun onKeyEvent(e: KeyEvent): Boolean {
         if (prefs.getBoolean("listening", false)) return false
         if (e.keyCode != prefs.getInt("pad_key", DEFAULT_KEY)) return false
@@ -173,8 +283,8 @@ class TranslatorService : AccessibilityService() {
         btn.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(when {
-                frozen -> Color.argb(220, 90, 90, 90)
-                live || show -> Color.argb(220, 30, 100, 200) // Azul fijo indicando modo offline activo
+                frozen -> Color.argb(220, 30, 90, 170)
+                live || show -> Color.argb(220, 30, 140, 60)
                 else -> Color.argb(200, 40, 40, 40)
             })
         }
@@ -185,13 +295,15 @@ class TranslatorService : AccessibilityService() {
         live = !live; frozen = false; warned = false
         if (live) {
             show = true; last = ""; ov.removeAllViews(); ov.visibility = View.VISIBLE
-            h.post(tick)
+            h.post(tick); toast("Traducción en vivo: ACTIVADA")
         } else {
             h.removeCallbacks(tick); show = false; ov.removeAllViews(); ov.visibility = View.GONE
+            toast("Traducción en vivo: apagada")
         }
         paint()
     }
 
+    // Modo fijo: traduce una sola vez, deja la traducción fija y no revisa más hasta el próximo toque
     private fun fixedTap() {
         live = false; frozen = false; warned = false; h.removeCallbacks(tick)
         show = !show
@@ -203,9 +315,10 @@ class TranslatorService : AccessibilityService() {
     private fun doubleTap() {
         if (live) {
             frozen = !frozen; paint()
+            toast(if (frozen) "Traducción congelada (doble toque para seguir)" else "Traducción en vivo: sigue")
         } else {
             show = !show
-            if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else { ov.visibility = View.GONE }
+            if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else ov.visibility = View.GONE
             paint()
         }
     }
@@ -222,9 +335,9 @@ class TranslatorService : AccessibilityService() {
 
     private fun scan() {
         if (busy) return
-        if (!ready) return
+        if (!ready && prefs.getString("gkey", "").isNullOrBlank()) { toast("El modelo todavía se está bajando…"); return }
         busy = true
-        ov.visibility = View.INVISIBLE
+        ov.visibility = View.INVISIBLE   // así el OCR no lee la traducción
         h.postDelayed({ capture() }, 100)
     }
 
@@ -234,7 +347,7 @@ class TranslatorService : AccessibilityService() {
                 val hb = r.hardwareBuffer
                 val bmp = Bitmap.wrapHardwareBuffer(hb, r.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
                 hb.close()
-                showOv()
+                showOv()   // la traducción vuelve enseguida: menos parpadeo
                 if (bmp == null) done() else recognize(bmp)
             }
             override fun onFailure(code: Int) { done() }
@@ -259,68 +372,91 @@ class TranslatorService : AccessibilityService() {
 
     private fun onText(t: Text, ox: Int, oy: Int) {
         val br = Rect(bp.x, bp.y, bp.x + bp.width, bp.y + bp.height)
-        val bl = t.textBlocks.mapNotNull { b ->
-            val box = b.boundingBox ?: return@mapNotNull null
-            val s = b.text.replace("\n", " ").trim()
-            if (!jp.containsMatchIn(s)) return@mapNotNull null
-            val r = Rect(box).apply { offset(ox, oy) }
-            if (Rect.intersects(r, br)) null else Triple(r, s, max(1, b.lines.size))
-        }.sortedWith(compareBy<Triple<Rect, String, Int>>({ it.first.top }, { it.first.left }))
-        if (bl.isEmpty()) { ov.removeAllViews(); last = ""; done(); return }
-        val key = bl.joinToString("|") { it.second }
+        val ls = ArrayList<Pair<Rect, String>>()
+        for (b in t.textBlocks) for (ln in b.lines) {
+            val lb = ln.boundingBox ?: continue
+            val s = ln.text.trim()
+            if (!jp.containsMatchIn(s)) continue
+            val r = Rect(lb).apply { offset(ox, oy) }
+            if (!Rect.intersects(r, br)) ls.add(Pair(r, s))
+        }
+        ls.sortWith(compareBy<Pair<Rect, String>>({ it.first.top }, { it.first.left }))
+        if (ls.isEmpty()) { ov.removeAllViews(); last = ""; done(); return }
+        val key = ls.joinToString("|") { it.second }
         if (key == last) { done(); return }
-        if (cache.size > 300) cache.clear()
-        val need = bl.map { it.second }.filter { !cache.containsKey(it) }.distinct()
-        val finish = {
-            render(bl.map { Pair(it.first, it.third) }, bl.map { cache[it.second] })
-            last = key
-            done()
-        }
-        if (need.isEmpty()) { finish(); return }
-        
-        // Traducción directa offline mediante ML Kit
-        translateOfflineBatch(need) { res ->
-            need.forEachIndexed { i, s -> res.getOrNull(i)?.let { cache[s] = it } }
-            finish()
-        }
+        val cached = pageCache[key]
+        if (cached != null) { draw(ls, cached); last = key; done(); return }
+
+        val gk = prefs.getString("gkey", "").orEmpty().trim()
+        if (gk.isEmpty()) { offlineGroups(ls, key); return }
+        val pref = prefs.getString("gmodel", "").orEmpty().trim().ifEmpty { DEFAULT_MODEL }
+        Thread {
+            var err = ""
+            var res: List<Pair<List<Int>, String>>? = null
+            try {
+                val (m, g) = geminiGroups(gk, pref, ls.map { it.second })
+                if (m != pref) prefs.edit().putString("gmodel", m).apply()
+                res = g
+            } catch (e: Exception) { err = e.message ?: "error" }
+            val r = res
+            h.post {
+                if (r != null && r.isNotEmpty()) {
+                    if (pageCache.size > 100) pageCache.clear()
+                    pageCache[key] = r
+                    draw(ls, r); last = key; done()
+                } else {
+                    if (!warned) {
+                        warned = true
+                        Toast.makeText(this, "Gemini falló: " + err.ifEmpty { "respuesta vacía" } + ". Uso el traductor sin internet.", Toast.LENGTH_LONG).show()
+                    }
+                    offlineGroups(ls, key)
+                }
+            }
+        }.start()
     }
 
-    private fun translateOfflineBatch(texts: List<String>, cb: (List<String?>) -> Unit) {
-        val out = arrayOfNulls<String>(texts.size)
-        var completed = 0
-        texts.forEachIndexed { i, s ->
-            tr.translate(s).addOnCompleteListener { task ->
-                if (task.isSuccessful) {
-                    out[i] = task.result
-                } else {
-                    out[i] = s // Si falla, devuelve el texto original
-                }
-                synchronized(out) {
-                    completed++
-                    if (completed == texts.size) {
-                        h.post { cb(out.toList()) }
-                    }
+    // Sin Gemini: junta las líneas hasta un punto, signo o comillas (los puntos suspensivos no separan)
+    private fun offlineGroups(ls: List<Pair<Rect, String>>, key: String) {
+        val ends = "。！？!?』」）)"
+        val groups = ArrayList<List<Int>>()
+        var cur = ArrayList<Int>()
+        ls.forEachIndexed { i, l ->
+            cur.add(i + 1)
+            if (ends.indexOf(l.second.last()) >= 0) { groups.add(cur); cur = ArrayList() }
+        }
+        if (cur.isNotEmpty()) groups.add(cur)
+        val out = arrayOfNulls<String>(groups.size); var n = 0
+        groups.forEachIndexed { gi, g ->
+            val text = g.joinToString("") { ls[it - 1].second }
+            tr.translate(text).addOnCompleteListener { task ->
+                if (task.isSuccessful) out[gi] = task.result
+                if (++n == groups.size) {
+                    val res = groups.indices.mapNotNull { i -> out[i]?.let { Pair(groups[i], it) } }
+                    draw(ls, res); last = key; done()
                 }
             }
         }
     }
 
-    private fun render(rs: List<Pair<Rect, Int>>, tx: List<String?>) {
+    private fun draw(ls: List<Pair<Rect, String>>, groups: List<Pair<List<Int>, String>>) {
         ov.removeAllViews()
         val pad = dp(4)
         val sw = resources.displayMetrics.widthPixels
-        rs.forEachIndexed { i, (r, lines) ->
-            val s = tx[i] ?: return@forEachIndexed
-            val size = ((r.height().toFloat() / lines) * 0.5f).coerceIn(dp(11).toFloat(), dp(30).toFloat())
+        for ((idx, text) in groups) {
+            val rs = idx.filter { it in 1..ls.size }.map { ls[it - 1].first }
+            if (rs.isEmpty()) continue
+            val u = Rect(rs[0])
+            for (r in rs.drop(1)) u.union(r)
+            val size = ((u.height().toFloat() / rs.size) * 0.5f).coerceIn(dp(11).toFloat(), dp(30).toFloat())
             val v = TextView(this).apply {
-                text = s; setTextColor(Color.WHITE); setBackgroundColor(Color.argb(230, 20, 20, 20))
+                this.text = text; setTextColor(Color.WHITE); setBackgroundColor(Color.argb(230, 20, 20, 20))
                 setPadding(pad, pad, pad, pad)
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, size)
             }
-            val left = max(0, r.left - pad)
-            val w = max(dp(60), min(max(r.width() + pad * 2, dp(140)), sw - left))
+            val left = max(0, u.left - pad)
+            val w = max(dp(60), min(max((u.width() * 1.5f).toInt() + pad * 2, dp(160)), sw - left))
             val lp = FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT)
-            lp.leftMargin = left; lp.topMargin = max(0, r.top - pad)
+            lp.leftMargin = left; lp.topMargin = max(0, u.top - pad)
             ov.addView(v, lp)
         }
     }
