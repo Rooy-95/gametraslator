@@ -64,10 +64,9 @@ class MainActivity : Activity() {
         }
         add(keyBox)
         btn("Guardar clave") {
-            // Limpieza estricta de espacios al guardar
             val cleanKey = keyBox.text.toString().trim()
             prefs.edit().putString("gkey", cleanKey).apply()
-            Toast.makeText(this, "Clave guardada correctamente", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Guardado", Toast.LENGTH_SHORT).show()
         }
         setContentView(ScrollView(this).apply { addView(col) })
         refresh()
@@ -340,11 +339,11 @@ class TranslatorService : AccessibilityService() {
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.1))
         
-        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
+        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent?key=$key")
             .openConnection() as HttpURLConnection
+            
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
-        con.setRequestProperty("x-goog-api-key", key)
         con.outputStream.use { it.write(body.toString().toByteArray()) }
         if (con.responseCode != 200) throw Exception("HTTP " + con.responseCode)
         val resp = con.inputStream.bufferedReader().readText()
