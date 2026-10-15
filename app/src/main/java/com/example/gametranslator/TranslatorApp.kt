@@ -345,8 +345,10 @@ class TranslatorService : AccessibilityService() {
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2))
-        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMIMG_MODEL:generateContent".replace("GEMIMG", "GEMINI"))
+        
+        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
             .openConnection() as HttpURLConnection
+            
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
         con.setRequestProperty("x-goog-api-key", key)
