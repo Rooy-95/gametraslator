@@ -1,8 +1,5 @@
 package com.example.gametranslator
 
-import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityService.ScreenshotResult
-import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.app.Activity
 import android.content.*
 import android.graphics.*
@@ -339,11 +336,13 @@ class TranslatorService : AccessibilityService() {
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.1))
         
-        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent?key=$key")
+        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
             .openConnection() as HttpURLConnection
             
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
+        con.setRequestProperty("Authorization", "Bearer $key")
+        
         con.outputStream.use { it.write(body.toString().toByteArray()) }
         if (con.responseCode != 200) throw Exception("HTTP " + con.responseCode)
         val resp = con.inputStream.bufferedReader().readText()
