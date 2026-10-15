@@ -170,7 +170,6 @@ class TranslatorService : AccessibilityService() {
         return super.onUnbind(i)
     }
 
-    // Mando: una vez = prender/apagar, dos veces rápido = congelar/seguir
     override fun onKeyEvent(e: KeyEvent): Boolean {
         if (prefs.getBoolean("listening", false)) return false
         if (e.keyCode != prefs.getInt("pad_key", DEFAULT_KEY)) return false
@@ -210,7 +209,6 @@ class TranslatorService : AccessibilityService() {
         paint()
     }
 
-    // Modo fijo: traduce una sola vez, deja la traducción fija y no revisa más hasta el próximo toque
     private fun fixedTap() {
         live = false; frozen = false; warned = false; h.removeCallbacks(tick)
         show = !show
@@ -244,7 +242,7 @@ class TranslatorService : AccessibilityService() {
         if (busy) return
         if (!ready && prefs.getString("gkey", "").isNullOrBlank()) { toast("El modelo todavía se está bajando…"); return }
         busy = true
-        ov.visibility = View.INVISIBLE   // así el OCR no lee la traducción
+        ov.visibility = View.INVISIBLE
         h.postDelayed({ capture() }, 100)
     }
 
@@ -254,7 +252,7 @@ class TranslatorService : AccessibilityService() {
                 val hb = r.hardwareBuffer
                 val bmp = Bitmap.wrapHardwareBuffer(hb, r.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
                 hb.close()
-                showOv()   // la traducción vuelve enseguida: menos parpadeo
+                showOv()
                 if (bmp == null) done() else recognize(bmp)
             }
             override fun onFailure(code: Int) { done() }
@@ -303,15 +301,26 @@ class TranslatorService : AccessibilityService() {
         }
     }
 
-    // Traducción: Gemini si hay clave guardada (y funciona); si no, el traductor sin internet
     private fun translateAll(texts: List<String>, cb: (List<String?>) -> Unit) {
         val key = prefs.getString("gkey", "")?.trim().orEmpty()
-        if (key.isEmpty()) { offline(texts, cb); return }
+        if (key.isEmpty()) { 
+            toast("Usando traductor Offline (Sin clave de Gemini)")
+            offline(texts, cb) 
+            return 
+        }
         Thread {
-            val res: List<String?>? = try { gemini(key, texts) } catch (e: Exception) { null }
+            var res: List<String?>? = null
+            try {
+                res = gemini(key, texts)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             h.post {
-                if (res != null) cb(res) else {
-                    if (!warned) { warned = true; toast("Gemini no respondió (clave, internet o límite). Uso el traductor sin internet.") }
+                if (res != null) {
+                    toast("¡Traducido con Gemini Flash!")
+                    cb(res) 
+                } else {
+                    toast("Falla de Gemini. Usando traductor Offline.")
                     offline(texts, cb)
                 }
             }
@@ -329,14 +338,14 @@ class TranslatorService : AccessibilityService() {
     }
 
     private fun gemini(key: String, texts: List<String>): List<String?> {
-        val lines = texts.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("\n")
+        val lines = texts.mapIndexed { i, s -> "${i + 1}.$s" }.joinToString("\n")
         val prompt = "Sos traductor de videojuegos del japonés al español neutro. Traducí cada línea numerada de forma natural, " +
             "respetando el tono del personaje y sin explicar nada. Los nombres propios dejalos como están. " +
             "Devolvé SOLO un arreglo JSON de ${texts.size} strings, en el mismo orden.\n\n$lines"
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2))
-        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent")
+        val con = URL("https://generativelanguage.googleapis.com/v1beta/models/$GEMIMG_MODEL:generateContent".replace("GEMIMG", "GEMINI"))
             .openConnection() as HttpURLConnection
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
