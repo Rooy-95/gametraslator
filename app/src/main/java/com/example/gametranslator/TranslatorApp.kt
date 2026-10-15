@@ -178,10 +178,10 @@ class TranslatorService : AccessibilityService() {
         btn.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(when {
-                !live && !show -> Color.argb(200, 40, 40, 40) // Gris (Apagado)
-                frozen -> Color.argb(220, 90, 90, 90)          // Gris oscuro (Congelado)
-                usingGemini -> Color.argb(220, 30, 160, 60)    // Verde (Gemini Flash Online)
-                else -> Color.argb(220, 30, 100, 200)          // Azul (Traductor Offline)
+                !live && !show -> Color.argb(200, 40, 40, 40)
+                frozen -> Color.argb(220, 90, 90, 90)
+                usingGemini -> Color.argb(220, 30, 160, 60)
+                else -> Color.argb(220, 30, 100, 200)
             })
         }
     }
