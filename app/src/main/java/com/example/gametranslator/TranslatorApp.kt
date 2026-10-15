@@ -27,7 +27,7 @@ import org.json.JSONObject
 
 private const val PREFS = "gt"
 private const val DEFAULT_KEY = KeyEvent.KEYCODE_BUTTON_R2
-private const val GEMINI_MODEL = "gemini-2.5-flash"
+private const val GEMINI_MODEL = "gemini-1.5-flash"
 
 class MainActivity : Activity() {
     private var waiting = false
@@ -347,7 +347,7 @@ class TranslatorService : AccessibilityService() {
             
         con.requestMethod = "POST"; con.connectTimeout = 8000; con.readTimeout = 15000; con.doOutput = true
         con.setRequestProperty("Content-Type", "application/json")
-        con.setRequestProperty("Authorization", "Bearer $key") // Autenticación Bearer para clave AQ...
+        con.setRequestProperty("Authorization", "Bearer $key")
         
         con.outputStream.use { it.write(body.toString().toByteArray()) }
         if (con.responseCode != 200) throw Exception("HTTP " + con.responseCode)
