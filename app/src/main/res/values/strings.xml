@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desc">Traduce el texto japonés de los juegos y lo muestra sobre la pantalla. Detecta el botón del mando elegido.</string>
+</resources>
