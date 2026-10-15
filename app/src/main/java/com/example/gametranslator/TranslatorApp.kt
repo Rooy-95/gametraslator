@@ -219,32 +219,53 @@ class TranslatorService : AccessibilityService() {
         val key = bl.joinToString(" ") { it.second }
         if (key == last) { done(); return }
         
+        // Traducimos la oración completa para capturar el contexto global y que tenga sentido coherente en español
         tr.translate(key).addOnCompleteListener { task ->
             if (task.isSuccessful) {
-                val translatedText = task.result ?: ""
-                if (bl.isNotEmpty()) {
-                    val firstRect = bl[0].first
-                    render(listOf(firstRect), arrayOf(translatedText))
-                }
+                val fullTranslation = task.result ?: ""
+                
+                // Dividimos la traducción resultante de manera proporcional entre la cantidad de líneas detectadas
+                // para mantener la estructura visual en la pantalla del juego sin perder el sentido de la oración completa.
+                val lines = bl.map { it.first }
+                val translatedParts = splitTextIntoParts(fullTranslation, lines.size)
+                
+                render(lines, translatedParts.toTypedArray())
+            } else {
+                ov.removeAllViews()
             }
             last = key
             done()
         }
     }
 
+    // Función auxiliar para dividir el texto traducido de forma equitativa según la cantidad de renglones en pantalla
+    private fun splitTextIntoParts(text: String, count: Int): List<String> {
+        if (count <= 1) return listOf(text)
+        val words = text.split(" ")
+        if (words.size <= count) return words.map { it }
+        
+        val chunkSize = ceil(words.size.toDouble() / count).toInt()
+        return words.chunked(chunkSize).map { it.joinToString(" ") }
+    }
+
     private fun render(rs: List<Rect>, tx: Array<String?>) {
         ov.removeAllViews()
         val pad = dp(4)
         rs.forEachIndexed { i, r ->
-            val s = tx[i] ?: return@forEachIndexed
+            val s = tx.getOrNull(i) ?: return@forEachIndexed
             val v = TextView(this).apply {
-                text = s; setTextColor(Color.WHITE); setBackgroundColor(Color.argb(230, 20, 20, 20))
-                gravity = Gravity.CENTER; setPadding(pad, pad, pad, pad)
-                val targetSize = max(10f, r.height() * 0.6f)
+                text = s
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.argb(230, 20, 20, 20))
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(pad, pad, pad, pad)
+                // Tamaño dinámico proporcional a la altura de cada renglón original
+                val targetSize = max(12f, r.height() * 0.65f)
                 setTextSize(TypedValue.COMPLEX_UNIT_PX, targetSize)
             }
             val lp = FrameLayout.LayoutParams(r.width(), r.height())
-            lp.leftMargin = r.left; lp.topMargin = r.top
+            lp.leftMargin = r.left
+            lp.topMargin = r.top
             ov.addView(v, lp)
         }
     }
