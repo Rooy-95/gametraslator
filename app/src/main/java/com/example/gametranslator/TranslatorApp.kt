@@ -165,7 +165,7 @@ class TranslatorService : AccessibilityService() {
     }
 
     private val tick = object : Runnable {
-        override fun run() { if (!live) return; if (show) scan(); h.postDelayed(this, 1500) }
+        override fun run() { if (!live) return; if (show) scan(); h.postDelayed(this, 5000) }
     }
 
     private fun scan() {
