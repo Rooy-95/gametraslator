@@ -216,36 +216,25 @@ class TranslatorService : AccessibilityService() {
         }
         if (bl.isEmpty()) { ov.removeAllViews(); last = ""; done(); return }
         
-        val key = bl.joinToString(" ") { it.second }
+        val key = bl.joinToString("|") { it.second }
         if (key == last) { done(); return }
         
-        // Traducimos la oración completa para capturar el contexto global y que tenga sentido coherente en español
-        tr.translate(key).addOnCompleteListener { task ->
-            if (task.isSuccessful) {
-                val fullTranslation = task.result ?: ""
-                
-                // Dividimos la traducción resultante de manera proporcional entre la cantidad de líneas detectadas
-                // para mantener la estructura visual en la pantalla del juego sin perder el sentido de la oración completa.
-                val lines = bl.map { it.first }
-                val translatedParts = splitTextIntoParts(fullTranslation, lines.size)
-                
-                render(lines, translatedParts.toTypedArray())
-            } else {
-                ov.removeAllViews()
+        // Traducimos cada línea por separado de forma limpia para que la gramática y el sentido sean correctos
+        val out = arrayOfNulls<String>(bl.size)
+        var n = 0
+        bl.forEachIndexed { i, x ->
+            tr.translate(x.second).addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    out[i] = task.result
+                }
+                n++
+                if (n == bl.size) {
+                    render(bl.map { it.first }, out)
+                    last = key
+                    done()
+                }
             }
-            last = key
-            done()
         }
-    }
-
-    // Función auxiliar para dividir el texto traducido de forma equitativa según la cantidad de renglones en pantalla
-    private fun splitTextIntoParts(text: String, count: Int): List<String> {
-        if (count <= 1) return listOf(text)
-        val words = text.split(" ")
-        if (words.size <= count) return words.map { it }
-        
-        val chunkSize = ceil(words.size.toDouble() / count).toInt()
-        return words.chunked(chunkSize).map { it.joinToString(" ") }
     }
 
     private fun render(rs: List<Rect>, tx: Array<String?>) {
