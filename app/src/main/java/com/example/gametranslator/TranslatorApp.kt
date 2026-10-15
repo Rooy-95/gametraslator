@@ -38,7 +38,7 @@ class MainActivity : Activity() {
         label = TextView(this)
         add(TextView(this).apply {
             text = "1) Activá 'Traductor de juegos' en Accesibilidad (Android 13+: Info de la app > ⋮ > Permitir ajustes restringidos).\n" +
-                "2) Abrí el juego. Botón 訳: toque = traducción en vivo, doble toque = mostrar/ocultar, mantener = elegir zona, arrastrar = mover.\n"
+                "2) Abrí el juego. Botón 訳: toque = traducir y fijar, doble toque = mostrar/ocultar, mantener = elegir zona, arrastrar = mover.\n"
         })
         add(label)
         btn("Abrir Accesibilidad") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -155,8 +155,13 @@ class TranslatorService : AccessibilityService() {
 
     private fun toggleLive() {
         live = !live; paint()
-        if (live) { show = true; last = ""; ov.visibility = View.VISIBLE; h.post(tick); toast("Traducción en vivo: ACTIVADA") }
-        else { h.removeCallbacks(tick); show = false; ov.removeAllViews(); ov.visibility = View.GONE; toast("Traducción en vivo: apagada") }
+        if (live) { 
+            show = true; last = ""; ov.visibility = View.VISIBLE; scan()
+            toast("Traducción activada (fija)") 
+        } else { 
+            show = false; ov.removeAllViews(); ov.visibility = View.GONE; 
+            toast("Traducción apagada") 
+        }
     }
 
     private fun toggleShow() {
@@ -164,15 +169,11 @@ class TranslatorService : AccessibilityService() {
         if (show) { last = ""; ov.visibility = View.VISIBLE; scan() } else ov.visibility = View.GONE
     }
 
-    private val tick = object : Runnable {
-        override fun run() { if (!live) return; if (show) scan(); h.postDelayed(this, 5000) }
-    }
-
     private fun scan() {
         if (busy) return
         if (!ready) { toast("El modelo todavía se está bajando…"); return }
         busy = true
-        ov.visibility = View.INVISIBLE   // así el OCR no lee la traducción
+        ov.visibility = View.INVISIBLE
         h.postDelayed({ capture() }, 120)
     }
 
@@ -208,35 +209,42 @@ class TranslatorService : AccessibilityService() {
         val br = Rect(bp.x, bp.y, bp.x + bp.width, bp.y + bp.height)
         val bl = t.textBlocks.mapNotNull { b ->
             val box = b.boundingBox ?: return@mapNotNull null
-            val s = b.text.replace("\n", "")
+            val s = b.text.replace("\n", " ")
             if (!jp.containsMatchIn(s)) return@mapNotNull null
             val r = Rect(box).apply { offset(ox, oy) }
             if (Rect.intersects(r, br)) null else r to s
         }
         if (bl.isEmpty()) { ov.removeAllViews(); last = ""; done(); return }
-        val key = bl.joinToString("|") { it.second }
+        
+        val key = bl.joinToString(" ") { it.second }
         if (key == last) { done(); return }
-        val out = arrayOfNulls<String>(bl.size); var n = 0
-        bl.forEachIndexed { i, x ->
-            tr.translate(x.second).addOnCompleteListener { task ->
-                if (task.isSuccessful) out[i] = task.result
-                if (++n == bl.size) { render(bl.map { it.first }, out); last = key; done() }
+        
+        tr.translate(key).addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                val translatedText = task.result ?: ""
+                if (bl.isNotEmpty()) {
+                    val firstRect = bl[0].first
+                    render(listOf(firstRect), arrayOf(translatedText))
+                }
             }
+            last = key
+            done()
         }
     }
 
     private fun render(rs: List<Rect>, tx: Array<String?>) {
         ov.removeAllViews()
-        val pad = dp(6)
+        val pad = dp(4)
         rs.forEachIndexed { i, r ->
             val s = tx[i] ?: return@forEachIndexed
             val v = TextView(this).apply {
                 text = s; setTextColor(Color.WHITE); setBackgroundColor(Color.argb(230, 20, 20, 20))
-                gravity = Gravity.CENTER_VERTICAL; setPadding(pad, dp(2), pad, dp(2))
-                setAutoSizeTextTypeUniformWithConfiguration(9, 24, 1, TypedValue.COMPLEX_UNIT_SP)
+                gravity = Gravity.CENTER; setPadding(pad, pad, pad, pad)
+                val targetSize = max(10f, r.height() * 0.6f)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, targetSize)
             }
-            val lp = FrameLayout.LayoutParams(r.width() + pad * 2, max(r.height() + pad * 2, dp(44)))
-            lp.leftMargin = max(0, r.left - pad); lp.topMargin = max(0, r.top - pad)
+            val lp = FrameLayout.LayoutParams(r.width(), r.height())
+            lp.leftMargin = r.left; lp.topMargin = r.top
             ov.addView(v, lp)
         }
     }
