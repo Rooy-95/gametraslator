@@ -55,7 +55,7 @@ class MainActivity : Activity() {
         mode.setOnClickListener { prefs.edit().putBoolean("fixed", !prefs.getBoolean("fixed", false)).apply(); showMode() }
         showMode(); add(mode)
         val keyBox = EditText(this).apply {
-            hint = "Clave de Gemini (opcional)"
+            hint = "Clave de Gemini (AQ...)"
             setSingleLine()
             setText(prefs.getString("gkey", ""))
         }
